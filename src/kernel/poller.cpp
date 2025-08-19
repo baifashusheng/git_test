@@ -75,3 +75,20 @@ static inline int __poller_close_pfd(int fd)
 {
     return close(fd);
 }
+
+static inline int __poller_add_fd(int fd, int event, void *data, poller_t *poller)
+{
+    struct epoll_event ev = {
+            .events = event,
+            .data   = {
+                    .ptr = data
+            }
+    };
+
+    return epoll_ctl(poller->pfd, EPOLL_CTL_ADD, fd, &ev);
+}
+
+static inline int __poller_del_fd(int fd, int event, poller_t *poller)
+{
+    return epoll_ctl(poller->pfd, EPOLL_CTL_DEL, fd, NULL);
+}
