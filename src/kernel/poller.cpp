@@ -75,3 +75,5 @@ static inline int __poller_close_pfd(int fd)
 {
     return close(fd);
 }
+
+//测试是否为红黑树的根节点
