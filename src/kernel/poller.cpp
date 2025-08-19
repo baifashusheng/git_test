@@ -75,3 +75,52 @@ static inline int __poller_close_pfd(int fd)
 {
     return close(fd);
 }
+
+static inline int __poller_add_fd(int fd, int event, void *data, poller_t *poller)
+{
+    struct epoll_event ev = {
+            .events = event,
+            .data   = {
+                    .ptr = data
+            }
+    };
+
+    return epoll_ctl(poller->pfd, EPOLL_CTL_ADD, fd, &ev);
+}
+
+static inline int __poller_del_fd(int fd, int event, poller_t *poller)
+{
+    return epoll_ctl(poller->pfd, EPOLL_CTL_DEL, fd, NULL);
+}
+
+static inline int __poller_mod_fd(int fd, int old_event, int new_event, void *data, poller_t *poller)
+{
+    struct epoll_event ev = {
+        .events  = new_event,
+        .data    = {
+            .ptr = data
+        }
+    };
+    return epoll_ctl(poller->pfd, EPOLL_CTL_MOD, fd, &ev);
+}
+
+static inline int __poller_create_timerfd()
+{
+    return timerfd_create(CLOCK_MONOTONIC, 0);
+}
+
+static inline int __poller_close_timerfd(int fd)
+{
+    return close(fd);
+}
+
+static inline int __poller_add_timerfd(int fd, poller_t *poller)
+{
+    struct epoll_event ev = {
+        .events = EPOLLIN | EPOLLET,
+        .data   = {
+           .ptr = NULL
+         }
+    };
+    return epoll_ctl(poller->pfd, EPOLL_CTL_ADD, fd, &ev);
+}
