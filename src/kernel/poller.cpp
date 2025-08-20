@@ -148,4 +148,77 @@ static inline void *__poller_event_data(const __poller_event_t *event)
 
 #else /*BSD,macOS*/
 
+static inline int __poller_create_pfd()
+{
+    return kqueue();
+}
+
+static inline int __poller_close_pfd(int fd)
+{
+    return close(fd);
+}
+
+static inline int __poller_add_fd(int fd, int event, void *data, poller_t *poller)
+{
+    struct kevent ev;
+    EV_SET(&ev, fd, event, EV_ADD, 0, 0, data);
+    return kevent(poller->fd, &ev, 1, NULL, 0 , NULL);
+}
+
+static inline int __poller_del_fd(int fd, int event, poller_t *poller)
+{
+    struct kevent ev;
+    EV_SET(&ev, fd, event, EV_DELETE, 0, 0, NULL);
+    return kevent(poller->fd, &ev, 1, NULL, 0, NULL);
+}
+
+static inline int __poller_mod_fd(int fd, int old_event, int new_event, void *data, poller_t *poller)
+{
+    struct kevent ev[2];
+    EV_SET(&ev[0], fd, old_event, EV_DELETE, 0, 0, NULL);
+    EV_SET(&ev[0], fd, new_event, EV_ADD, 0, 0, data);
+    return kevent(poller->fd, ev, 2, NULL, 0, NULL);
+}
+
+static inline int __poller_create_timerfd()
+{
+    return 0;
+}
+
+static inline int __poller_close_timerfd(int fd)
+{
+    return 0;
+}
+
+static inline int __poller_add_timerfd(int fd, poller_t *poller)
+{
+    return 0;
+}
+
+static int __poller_set_timerfd(int fd, const struct timespec *abstime, poller_t *poller)
+{
+    struct timespec cutime;
+    long long nseconds;
+    struct kevent ev;
+    int flags;
+
+    if(abstime->tv_sec || abstime->tv_nsec)
+    {
+        clock_gettime(CLOCK_MONOTONIC, &curtime);
+        nseconds = 1000000000LL * (abstime->tv_sec - curtime.tv_sec);
+        nseconds += abstime->tv_nsec - curtime.tv_nsec;
+        flags = EV_ADD;
+    }
+    else
+    {
+        nseconds = 0;
+        flags = EV_SET;
+    }
+
+    EV_SET(&ev, fd, EVFILT_TIMER, flags, NOTE_NSECONDS, nseconds, NULL);
+    return kevent(poller->pfd, &ev, 1, NULL, 0, NULL);
+}
+
+typedef struct kevent __poller_event_t;
+
 #endif
