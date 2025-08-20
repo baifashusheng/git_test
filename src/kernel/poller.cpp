@@ -124,3 +124,28 @@ static inline int __poller_add_timerfd(int fd, poller_t *poller)
     };
     return epoll_ctl(poller->pfd, EPOLL_CTL_ADD, fd, &ev);
 }
+
+static inline int __poller_set_timerfd(int fd, const struct timespace *abstime, poller_t *poller)
+{
+    struct itimerspec timer ={
+            .it_interval = {},
+            .it_value    = *abstime
+    };
+    return timerfd_settime(fd, TFD_TIMER_ABSTIME, &timer, NULL);
+}
+
+typedef struct epoll_event __poller_event_t;
+
+static inline int __poller_wait(__poller_event_t *events, int maxevents, poller_t *poller)
+{
+    return epoll_wait(poller->pfd, events, maxevents, -1);
+}
+
+static inline void *__poller_event_data(const __poller_event_t *event)
+{
+    return event->data.ptr;
+}
+
+#else /*BSD,macOS*/
+
+#endif
