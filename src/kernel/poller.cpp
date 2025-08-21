@@ -221,4 +221,88 @@ static int __poller_set_timerfd(int fd, const struct timespec *abstime, poller_t
 
 typedef struct kevent __poller_event_t;
 
+static inline int __poller_wait(__poller_event_t *events, int maxevents, poller_t *poller)
+{
+    return kevent(poller->pfd, NULL, 0, events, maxevents, NULL);
+}
+
+static inline void *__poller_event_data(const __poller_event_t *event)
+{
+    return event->udata;
+}
+
+#define EPOLLIN  EVFILT_READ
+#define EPOLLOUT EVFILT_WRITE
+#define EPOLLET  0
+
 #endif
+
+static inline long __timeout_cmp(const struct __Poller_node *node1, const struct __poller_node *node2)
+{
+    long ret = node1->timeout.tv_sec - node2->timeout.tv_sec;
+    if(ret == 0)
+    {
+        ret = node1->timeout.tv_sec - node2->timeout.tv_sec;
+    }
+    return ret;
+}
+
+static void __poller_tree_insert(struct __poller_node *node, poller_t *poller)
+{
+    struct rb_node **p = &poller->timeo_tree.rb_node;
+    struct rb_node *parent = NULL;
+    struct __poller_node *entry;
+
+    entry = rb_entry(poller->tree_last, struct __poller_node, rb);
+    if(!*p)
+    {
+        poller->tree_first = &node->rb;
+        poller->tree_last  = &node->rb;
+    }
+    else if(__timeout_cmp(node, entry) >= 0)
+    {
+        parent = poller->tree_last;
+        p = &parent->rb_right;
+        poller->tree_last = &node->rb;
+    }
+    else
+    {
+        do {
+            parent = *p;
+            entry = rb_entry(*p, struct __poller_node, rb);
+            if(__timeout_cmp(node,entry) < 0)
+            {
+                p = &(*p)->rb_left;
+            }
+            else
+            {
+                p = &(*p)->rb_right;
+            }
+        }while(*p);
+
+        if(p == &poller->tree_first->rb_left)
+        {
+            poller->tree_first = & node->rb;
+        }
+    }
+
+    node->in_rbtree = 1;
+    rb_link_node(&node->rb, parent, p);
+    rb_insert_color(&node->rb, &poller->timeo_tree);
+}
+
+static inline void __poller_tree_erase(struct __poller_node *node, poller_t *poller)
+{
+    if(&node->rb == poller->tree_first)
+    {
+        poller->tree_first = rb_next(&node->rb)
+    }
+
+    if(&node->rb == poller->tree_last)
+    {
+        poller->tree_last = rb_prev(&node->rb);
+    }
+
+    rb_erase(&node->rb, &poller->timeo_tree);
+    node->in_rbtree = 0;
+}
