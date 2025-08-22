@@ -306,3 +306,71 @@ static inline void __poller_tree_erase(struct __poller_node *node, poller_t *pol
     rb_erase(&node->rb, &poller->timeo_tree);
     node->in_rbtree = 0;
 }
+
+static int __poller_remove_node(struct __poller_node *node, poller_t *poller)
+{
+    int removed;
+
+    pthread_mutex_lock(&poller->mutex);
+    removed = node->removed;
+    if(!removed)
+    {
+        poller->nodes[node->data.fd] = NULL;
+
+        if(node->in_rbtree)
+        {
+            __poller_tree_erase(node, poller);
+        }
+        else
+        {
+            list_del(&node->list);
+        }
+
+        __poller_del_fd(node->data.fd, node->event, poller);
+    }
+
+    pthread_mutex_unlock(&poller->mutex);
+    return removed;
+}
+
+static int __poller_append_message(const void *buf, size_t *n,struct __poller_node *node, poller_t *poller)
+{
+    poller_message_t *mgs = node->data.message;
+    struct __poller_node *res;
+    int ret;
+
+    if(!msg)
+    {
+        res = (stuct __poller_node *)malloc(sizeof (struct __poller_node));
+        if(!res)
+            return -1;
+
+        msg = node->data.create_messgae(node->data.context);
+        if(!msg)
+        {
+            free(!msg);
+            return -1;
+        }
+
+        node->data.message = msg;
+        node->res = res;
+    }
+    else
+    {
+        res = node->res;
+    }
+
+    ret = msg->append(buf, n, msg);
+    if(ret > 0)
+    {
+        res->data = node->data;
+        res->error = 0;
+        res->state = PR_ST_SUCCESS;
+        poller->callback((struct poller_result *)res,poller->context);
+
+        node->data.message = NULL;
+        node->res = NULL;
+    }
+
+    return ret;
+}
