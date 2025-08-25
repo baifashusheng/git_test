@@ -374,3 +374,55 @@ static int __poller_append_message(const void *buf, size_t *n,struct __poller_no
 
     return ret;
 }
+
+static int __poller_handle_ssl_error(struct __poller_node *node, int ret, poller_t *poller)
+{
+    int error = SSL_get_error(node->data.ssl, ret);
+    int event;
+
+    switch(error)
+    {
+        case SSL_ERROR_WANT_READ:
+            event = EPOLLIN | EPOLLET;
+            break;
+
+        case SSL_ERROR_WANT_WRITE:
+            event = EPOLLOUT | EPOLLET;
+            break;
+
+        default:
+            error = -error;
+
+        case SSL_ERROR_SYSCALL:
+            return -1;
+    }
+
+    pthread_mutex_lock(&poller->mutex);
+    if(!node->removed)
+    {
+        ret = __poller_mod_fd(node->data.fd, node->event, event, node, poller);
+        if(ret >= 0)
+            node->event = event;
+    }
+    else
+    {
+        ret = 0;
+    }
+    pthread_mutex_unlock(&poller->mutex);
+
+    return ret;
+}
+
+static void __poller_handler_read(struct __poller_node *node, poller_t *poller)
+{
+    ssize_t nleft;
+    size_t n;
+    char *p;
+
+    while(1)
+    {
+
+    }
+
+
+}
