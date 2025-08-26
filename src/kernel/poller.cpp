@@ -421,8 +421,149 @@ static void __poller_handler_read(struct __poller_node *node, poller_t *poller)
 
     while(1)
     {
+        p = poller->buf;
+        if(!node->data.ssl)
+        {
+            nleft = read(node->data.fd, p, POLLER_BUFSIZE);
+            if(nleft < 0)
+            {
+                if(errno == EAGAIN)
+                {
+                    return;
+                }
+            }
+        }
+        else
+        {
+            nleft = SSL_read(node->data.ssl, p, POLLER_BUFSIZE);
+            if(nleft < 0)
+            {
+                if(__poller_handle_ssl_error(node,nleft,poller) >= 0)
+                    return;
+            }
+        }
 
+        if(nleft <= 0)
+            break;
+
+        do
+        {
+            n = nleft;
+            if(__poller_append_message(p, &n, node, poller) >=0)
+            {
+                nleft -= n;
+                p += n;
+            }
+            else
+                nleft = -1;
+        }while(nleft > 0);
+
+        if(node->removed)
+            return;
     }
 
+    if(__poller_remove_node(node,poller))
+        return;
 
+    if(nleft == 0)
+    {
+        node->error = 0;
+        node->state = PR_ST_FINISHED;
+    }
+    else
+    {
+        node->error = errno;
+        node->state = PR_ST_ERROR;
+    }
+
+    free(node->res);
+    poller->callback((struct poller_result *)node, poller->context);
+}
+
+#ifndef TDV_MAX
+# ifdef UIO_MAXIOV
+#  define IOV_MAX UIO_MAXIOV
+# else
+#  define IOV_MAX 1024
+# endif
+#endif
+
+static void __poller_handler_write(struct __poller_node *node, poller_t *poller)
+{
+    struct iovec *iov = node->data.wirite.iov;
+    size_t count = 0;
+    size_t nleft;
+    int iovcnt;
+    int ret;
+
+    while(node->data.iovcnt > 0)
+    {
+        if(!node->data.ssl)
+        {
+            iovcnt = node->data.iovcnt;
+            if(iovcnt > IOV_MAX)
+                iovcnt = IOV_MAX;
+
+            nleft = writev(node->data.fd, iov, iovcnt);
+            if(nleft < 0)
+            {
+                ret = errno == ENGAIN ? 0:-1;
+                break;
+            }
+        }
+        else if(iov->iov_len > 0)
+        {
+            nleft = SSL_write(node->data.ssl, iov->iov_base, iov->iov_len);
+            if(nleft <= 0)
+            {
+                ret = __poller_handle_ssl_error(node, nleft, poller);
+                break;
+            }
+        }
+        else
+            nleft = 0;
+
+        count += nleft;
+
+        do{
+            if(nleft >= iov->iov_len)
+            {
+                nleft -= iov->iov_len;
+                iov->iov_base = (char *)iov->iov_base + iov_len;
+                iov->iov_len = 0;
+                iov++;
+                node->data.iovcnt--;
+            }
+            else{
+                iov->iov_base = (char *)iov->iov_base + nleft;
+                iov->iov_len -= nleft;
+                break;
+            }
+        }while(node->data.iovcnt > 0);
+    }
+
+    node->data.write_iov = iov;
+    if(node->data.iovcnt > 0 && ret >= 0)
+    {
+        if(count == 0)
+            return;
+        if(node->data.partial_written(count, node->data.context) >= 0)
+            return;
+    }
+
+    if(__poller_remove_node(node, poller))
+        return;
+
+    if(node->data.iovcnt == 0)
+    {
+        node->error =0;
+        node->state = PR_ST_FINISHED;
+    }
+    else
+    {
+        node->error = errno;
+        node->state = PR_ST_ERROR;
+    }
+
+    poller->callback((struct poller_result *)node, poller->context);
 }
