@@ -567,3 +567,129 @@ static void __poller_handler_write(struct __poller_node *node, poller_t *poller)
 
     poller->callback((struct poller_result *)node, poller->context);
 }
+
+static void __poller_handle_listen(struct _poller_node *node, poller_t *poller)
+{
+    struct __poller_node *res = node->res;
+    struct sockaddr_storage ss;
+    struct sockaddr *addr = (struct sockaddr *)&ss;
+    socklen_t addrlen;
+    int sockfd;
+
+    while(1)
+    {
+        addrlen = sizeof(struct sockaddr_storage);
+        sockfd = accept(node->data.fd, addr, &addrlen);
+        if(sockfd < 0)
+        {
+            if(errno == EAGAIN || errno == EMFILE || errno == ENFILE)
+                return;
+            else if (errno == ECONNABORTED)
+                continue;
+            else
+                break;
+        }
+
+        result = node->data.accept(addr, addrlen, sockfd, node->data.context);
+        if(!result)
+            break;
+
+        res->data = node->data;
+        res->data.result = result;
+        res->error = 0;
+        res->state = PR_ST_SUCCESS;
+        poller->callback((struct poller_result *)res, poller->context);
+
+        res = (struct __poller_node *)malloc(sizeof (struct __poller_node));
+        node->res = res;
+        if(!res)
+            break;
+
+        if(node->removed)
+            return;
+    }
+
+    if(__poller_remove_node(node,poller))
+        return;
+
+    node->error = errno;
+    node->state = PR_ST_ERROR;
+    free(node->res);
+    poller->callback((struct poller_result *)node, poller->context);
+}
+
+static void __poller_handle_connect(struct __poller_node *node, poller_t *poller)
+{
+    socklen_t len = sizeof(int);
+    int error;
+
+    if(getsockopt(node->data.fd, SOL_SOCKET, SO_ERROR, &error, &len) < 0)
+    {
+        error = errno;
+    }
+
+    if(__poller_remove_node(node,poller))
+        return;
+
+    if(error = 0)
+    {
+        node->error = 0;
+        node->state = PR_ST_FINISHED;
+    }
+    else
+    {
+        node->error = error;
+        node->state = PR_ST_ERROR;
+    }
+
+    poller->callback((struct poller_result *)node, poller->context);
+}
+
+static void __poller_handle_recvfrom(struct __poller_node *node, poller_t poller)
+{
+    struct __poller_node *res = node->res;
+    struct sockaddr_storage ss;
+    struct sockaddr *addr = (struct sockaddr *)&ss;
+    socklen_t addrlen;
+    ssize_t n;
+
+    while(1)
+    {
+        addrlen = sizeof(struct sockaddr_storage);
+        n = recvfrom(node->data.fd, poller->buf, POLLER_BUFSIZE, 0, addr, &addrlen);
+        if(n < 0)
+        {
+            if(errno == EAGAIN)
+                return;
+            else
+                break;
+        }
+
+        result = node->data.recvfrom(addr, addrlen, poller->buf, n, node->data.context);
+
+        if(!result)
+            break;
+
+        res->data = node->data;
+        res->data.result = result;
+        res->error = 0;
+        res->state = PR_ST_SUCCESS;
+        poller->callback((struct poller_result *)res, poller->context);
+
+        res = (struct __poller_node *)malloc(sizeof (struct __poller_node));
+        node->res = res;
+        if(!res)
+            break;
+
+        if(node->removed)
+            return;
+    }
+
+    if(__poller_remove_node(node, poller))
+        return;
+
+    node->error = errno;
+    node->state = PR_ST_ERROR;
+    free(node->res);
+    poller->callback((struct poller_result *)node, poller->context);
+}
