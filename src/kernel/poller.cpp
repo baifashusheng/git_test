@@ -693,3 +693,346 @@ static void __poller_handle_recvfrom(struct __poller_node *node, poller_t poller
     free(node->res);
     poller->callback((struct poller_result *)node, poller->context);
 }
+
+static void __poller_handle_ssl_accept(struct __poller_node *node, poller_t *poller)
+{
+    int ret = SSL_accept(node->data.ssl);
+    if(ret <= 0)
+    {
+        if(__poller_handle_ssl_error(node, ret, poller) >= 0)
+        {
+            return;
+        }
+    }
+
+    if(__poller_remove_node(node, poller))
+        return;
+
+    if(ret > 0)
+    {
+        node->error = 0;
+        node->state = PR_ST_FINISHED;
+    }
+    else
+    {
+        node->error = errno;
+        node->state = PR_ST_ERROR;
+    }
+
+    poller->callback((struct poller_result *)node, poller->context);
+}
+
+static void __poller_handle_ssl_connect(struct __poller_node *node, poller_t *poller)
+{
+    int ret = SSL_connect(node->data.ssl);
+    if(ret <= 0)
+    {
+        if(__poller_handle_ssl_error(node, ret, poller) >= 0)
+        {
+            return;
+        }
+    }
+
+    if(__poller_remove_node(node, poller))
+    {
+        return;
+    }
+
+    if(ret > 0)
+    {
+        node->error = 0;
+        node->state = PR_ST_FINISHED;
+    }
+    else
+    {
+        node->error = errno;
+        node->state = PR_ST_ERROR;
+    }
+
+    poller->callback((struct poller_result *)node, poller->context);
+}
+
+static void __poller_handle_ssl_shutdown(struct __poller_node *node, poller_t *poller)
+{
+    int ret = SSL_shutdown(node->data.ssl);
+    if(ret <= 0)
+    {
+        if(__poller_handle_ssl_error(node, ret, poller) >= 0)
+        {
+            return;
+        }
+    }
+
+    if(__poller_remove_node(node, poller))
+        return;
+
+    if(ret > 0)
+    {
+        node->error = 0;
+        node->state = PR_ST_FINISHED;
+    }
+    else
+    {
+        node->error = errno;
+        node->state = PR_ST_ERROR;
+    }
+
+    poller->callback((struct poller_result *)node, poller->context);
+}
+
+static void __poller_handle_event(struct __poller_node *node, poller_t *poller)
+{
+    struct _poller_node *res = node->res;
+    unsighed long long cnt = 0;
+    unsighed long long value;
+    void *result;
+    ssize_t n;
+
+    while(1)
+    {
+        n = read(node->data.fd, &value, sizeof(unsighed long long));
+        if(n == sizeof(unsigned  long long))
+        {
+            cnt += value;
+        }
+        else
+        {
+            if(n >= 0)
+            {
+                errno = EINVAL;
+            }
+            break;
+        }
+    }
+
+    if(errno == EAGAIN)
+    {
+        while(1)
+        {
+            if(cnt == 0)
+                return;
+
+            cnt--;
+            result = node->data.event(node->data.context);
+            if(!result)
+                break;
+
+            res->data = node->data;
+            res->data.result = result;
+            res->error = 0;
+            res->state = PR_ST_SUCCESS;
+            poller->callback((struct poller_result *)res, poller->context);
+
+            res = (struct __poller_node *)malloc(sizeof (struct __poller_node));
+            node->res = res;
+            if(!res)
+                break;
+
+            if(node->removed)
+                return;
+        }
+    }
+
+    if(cnt != 0)
+    {
+        write(node->data.fd, &cnt, sizeof(unsighed long long));
+    }
+
+    if(__poller_remove_node(node,poller))
+        return;
+
+    node->error = errno;
+    node->state = PR_ST_ERROR;
+    free(node->res);
+    poller->callback((struct poller_result *)node, poller->context);
+}
+
+static void __poller_handle_notify(struct __poller_node *node, poller_t *poller)
+{
+    struct __poller_node *res = node->res;
+    void *result;
+    ssize_t n;
+
+    while(1)
+    {
+        n = read(node->data.fd, &result, sizeof(void *));
+        if(n == sizeof(void *))
+        {
+            result = node->data.notify(result, node->data.context);
+            if(!result)
+                break;
+
+            res->data = node->data;
+            res->data.result = result;
+            res->error = 0;
+            res->state = PR_ST_SUCCESS;
+            poller->callback((struct poller_result *)res, poller->context);
+
+            res = (struct __poller_node *)malloc(sizeof (struct __poller_node));
+            node->res = res;
+            if(!res)
+                break;
+
+            if(node->removed)
+                return;
+        }
+        else if (n < 0 && errno ==EAGAIN)
+            return;
+        else
+        {
+            if(n > 0)
+            {
+                errno = EINVAL;
+            }
+            break;
+        }
+    }
+
+    if(__poller_remove_node(node, poller))
+        return;
+
+    if(n == 0)
+    {
+        node->error = 0;
+        node->state = PR_ST_FINISHED;
+    }
+    else
+    {
+        node->error = errno;
+        node->state = PR_ST_ERROR;
+    }
+
+    free(node->res);
+    poller->callback((struct poller_result*)node, poller->context);
+}
+
+static int __poller_handle_pipe(poller_t *poller)
+{
+    struct __poller_node *node = (struct __poller_node **)poller->buf;
+    int stop = 0;
+    int n;
+    int i;
+
+    n = read(poller->pipe_rd, node, POLLER_BUFSIZE) / sizeof (void *);
+    for(i = 0; i < n; i++)
+    {
+        if(node[i])
+        {
+            free(node[i]->res);
+            poller->callback((struct poller_result *)node[i], poller->context);
+        }
+        else
+            stop = 1;
+    }
+
+    return stop;
+}
+
+static void __poller_handle_timeout(const struct __poller_node *time_node, poller_t *poller)
+{
+    struct __poller_node *node;
+    struct list_head *pos, *tmp;
+
+    LIST_HEAD(timeo_list);
+
+    pthread_mutex_lock(&poller->mutex);
+    list_for_each_safe(pos, tmp, &poller->timeo_list)
+    {
+        node = list_entry(pos, struct __poller_node, list);
+        if(__timeout_cmp(node,time_node) > 0)
+        {
+            break;
+        }
+
+        if(node->data.fd >= 0)
+        {
+            poller->nodes[node->data.fd] = NULL;
+            __poller_del_fd(node->data.fd, node->event, poller);
+        }
+        else
+        {
+            node->removed = 1;
+        }
+
+        list_move_tail(pos, &timeo_list);
+    }
+
+    while(poller->tree_first)
+    {
+        node = rb_entry(poller->tree_first, struct __poller_node, rb);
+        if(__timeout_cmp(node, time_node) > 0)
+        {
+            break;
+        }
+
+        if(node->data.fd >= 0)
+        {
+            poller->nodes[node->data.fd] = NULL;
+            __poller_del_fd(node->data.fd, node->event, poller);
+        }
+        else
+        {
+            node->removed = 1;
+        }
+
+        poller->tree_first = rb_next(poller->tree_first);
+        rb_erase(&node->rb, &poller->timeo_tree);
+        list_add_tail(&node->list, &timeo_list);
+        if(!poller->tree_first)
+        {
+            poller->tree_last = NULL;
+        }
+
+        pthread_mutex_unlock(&poller->mutex);
+        list_for_each_safe(pos, tmp, &timeo_list)
+        {
+            node = list_entry(pos, struct __poller_node, list);
+            if(node->data.fd >=0)
+            {
+                node->error = ETIMEDOUT;
+                node->state = PR_ST_ERROR;
+            }
+            else
+            {
+                node->error = 0;
+                node->state = PR_ST_FINISHED;
+            }
+
+            free(node->res);
+            poller->callback((struct poller_result *)node, poller->context);
+        }
+    }
+}
+
+static void __poller_set_timer(poller_t *poller)
+{
+    struct __poller_node *node = NULL;
+    struct __poller_node *first;
+    struct timespec abstime;
+
+    pthread_mutex_lock(&poller->mutex);
+    if(!list_empty(&poller->timeo_list))
+    {
+        node = list_entry(poller->timeo_list.next, struct __poller_node, list);
+    }
+
+    if(poller->tree_first)
+    {
+        first = rb_entry(poller->tree_first, struct __poller_node, rb);
+        if(!node || _timeout_cmp(first,node) < 0)
+            node = first;
+    }
+
+    if(node)
+    {
+        abstime = node->timeout;
+    }
+    else
+    {
+        abstime.tv_sec = 0;
+        abstime.tv_nsec = 0;
+    }
+
+    __poller_set_timerfd(poller->timerfd, &abstime, poller);
+    pthread_mutex_unlock(&poller->mutex);
+}
