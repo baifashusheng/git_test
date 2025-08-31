@@ -1036,3 +1036,175 @@ static void __poller_set_timer(poller_t *poller)
     __poller_set_timerfd(poller->timerfd, &abstime, poller);
     pthread_mutex_unlock(&poller->mutex);
 }
+
+static void *__poller_thread_routine(void *arg)
+{
+    poller_t *poller = (poller_t *)arg;
+    __poller_event_t events[POLLER_EVENTS_MAX];
+    struct __poller_node time_node;
+    struct __poller_node *node;
+    int has_pipe_event;
+    int nevents;
+    int i;
+
+    while(1)
+    {
+        __poller_set_timer(poller);
+        nevents = __poller_wait(events, POLLER_EVENTS_MAX, poller);
+        clock_gettime(CLOCK_MONOTONIC, &time_node.timeout);
+        has_pipe_event = 0;
+        for(i = 0; i < nevents; i++)
+        {
+            node = (struct __poller_node *)__poller_event_data(&events[i]);
+            if(node <= (struct __poller_node *)1)
+            {
+                if(node == (struct __poller_node *)1)
+                {
+                    has_pipe_event = 1;
+                }
+                continue;
+            }
+
+            switch(node->data.operation)
+            {
+                case PD_OP_READ:
+                    __poller_handle_read(node, poller);
+                    break;
+                case PD_OP_WRITE:
+                    __poller_handle_write(node, poller);
+                    break;
+                case PD_OP_LISTEN:
+                    __poller_handle_listen(node, poller);
+                    break;
+                case PD_OP_CONNECT:
+                    __poller_handle_connect(node, poller);
+                    break;
+                case PD_OP_RECVFROM:
+                    __poller_handle_recvfrom(node, poller);
+                    break;
+                case PD_OP_SSL_ACCEPT:
+                    __poller_handle_ssl_accept(node, poller);
+                    break;
+                case PD_OP_SSL_CONNECT:
+                    __poller_handle_ssl_connect(node, poller);
+                    break;
+                case PD_OP_SSL_SHUTDOWN:
+                    __poller_handle_ssl_shutdown(node, poller);
+                    break;
+                case PD_OP_EVENT:
+                    __poller_handle_event(node, poller);
+                    break;
+                case PD_OP_NOTIFY:
+                    __poller_handle_notify(node, poller);
+                    break;
+            }
+        }
+
+        if(has_pipe_event)
+        {
+            if(__poller_handle_pipe(poller))
+            {
+                break;
+            }
+        }
+
+        __poller_handle_timeout(&time_node, poller);
+    }
+
+    return NULL;
+}
+
+static int __poller_open_pipe(poller_t *poller)
+{
+    int pipefd[2];
+
+    if(pipe(pipefd) >= 0)
+    {
+        if(__poller_add_fd(pipefd[0], EPOLLIN, (void *)1, poller) >= 0)
+        {
+            poller->pipe_rd = pipefd[0];
+            poller->pipe_wr = pipefd[1];
+            return 0;
+        }
+
+        close(pipefd[0]);
+        close(pipefd[1]);
+    }
+
+    return -1;
+}
+
+static int __poller_create_timer(poller_t *poller)
+{
+    int timerfd = __poller_cteate();
+    if(timerfd >= 0)
+    {
+        if(__poller_add_timefd(timerfd, poller) >= 0)
+        {
+            poller->timerfd = timerfd;
+            return 0;
+        }
+
+        __poller_close_timerfd(timerfd);
+    }
+
+    return -1;
+}
+
+poller_t *__poller_create(void **nodes_buf, const struct poller_params *params)
+{
+    poller_t *poller = (poller_t *)malloc(sizeof(poller_t));
+    int ret;
+
+    if(!poller)
+        return NULL;
+
+    poller->pfd = __poller_creat_pfd();
+    if(poller->pfd >= 0)
+    {
+        if(__poller_create_timer(poller) >= 0)
+        {
+            ret = pthread_mutex_init(&poller->mutex, NULL);
+            if(ret == 0)
+            {
+                poller->nodes = (struct __poller_node **)nodes_buf;
+                poller->max_open_files = params->max_open_files;
+                poller->callback = params->callback;
+                poller->context  = params->context;
+
+                poller->timeo_tree.rb_node = NULL;
+                poller->tree_first = NULL;
+                poller->tree_last  = NULL;
+                INIT_LIST_HEAD(&poller->timeo_list);
+                INIT_LIST_HEAD(&poller->no_timeo_list);
+
+                poller->stopped = 1;
+                return poller;
+            }
+
+            errno = ret;
+            __poller_close_timerfd(poller_timerfd);
+        }
+        __poller_close_pfd(poller->pfd);
+    }
+
+    free(poller);
+    return NULL;
+}
+
+poller_t *poller_create(const struct poller_params *params)
+{
+    void **nodes_buf = (void **)calloc(params->max_open_files, sizeof(void *));
+    poller_t *poller;
+
+    if(nodes_buf)
+    {
+        poller = __poller_create(nodes_buf, params);
+        if(poller)
+            return poller;
+        
+        free(nodes_buf);
+    }
+
+    return NULL;
+}
