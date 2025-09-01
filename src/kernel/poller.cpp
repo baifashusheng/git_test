@@ -1208,3 +1208,73 @@ poller_t *poller_create(const struct poller_params *params)
 
     return NULL;
 }
+
+void __poller_destroy(poller_t *poller)
+{
+    pthread_mutex_destroy(&poller->mutex);
+    __poller_close_timerfd(poller->timerfd);
+    __poller_close_pfd(poller->pfd);
+    free(poller);
+}
+
+void poller_destroy(poller_t *poller)
+{
+    free(poller->nodes);
+    __poller_destroy(poller);
+}
+
+int poller_start(poller_t *poller)
+{
+    pthread_t tid;
+    int ret;
+
+    pthread_mutex_lock(&poller->mutex);
+    if(__poller_open_pipe(poller) >= 0)
+    {
+        ret = pthread_create(&tid, NULL, __poller_thread_routine, poller);
+        if(ret == 0)
+        {
+            poller->tid = tid;
+            poller->stopped = 0;
+        }
+        else
+        {
+            errno = ret;
+            close(poller->pipe_wr);
+            close(poller->pipe_rd);
+        }
+    }
+
+    pthread_mutex_unlock(&poller->mutex);
+    return -poller->stopped;
+}
+
+static void __poller_insert_node(struct __poller_node *node, poller_t *poller)
+{
+    struct __poller_node *end;
+    end = list_entry(poller->timeo_list.prev, struct __poller_node, list);
+    if(list_empty(&poller->timeo_list))
+    {
+        list_add(&node->list, &poller->timeo_list);
+        end = rb_entry(poller->tree_first, struct __poller_node, rb);
+    }
+    else if( __timeout_cmp(node,end) >= 0)
+    {
+        list_add_tail(&node->list, &poller->timeo_list);
+        return;
+    }
+    else
+    {
+        __poller_tree_insert(node, poller);
+        if(&node->rb != poller->tree_first)
+        {
+            return;
+        }
+        end = list_entry(poller->timeo_list.next, struct __poller_node, list);
+    }
+
+    if(!poller->tree_first || __timeout_cmp(node , end) < 0)
+    {
+        __poller_set_timerfd(poller->timerfd, &node->timeout, poller);
+    }
+}
