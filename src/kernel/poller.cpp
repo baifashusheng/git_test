@@ -1278,3 +1278,138 @@ static void __poller_insert_node(struct __poller_node *node, poller_t *poller)
         __poller_set_timerfd(poller->timerfd, &node->timeout, poller);
     }
 }
+
+static void __poller_node_set_timeout(int timeout, struct __poller_node *node)
+{
+    clock_gettime(CLOCK_MONOTONIC, &node->timeout);
+    node->timeout.tv_sec += timeout / 1000;
+    node->timeout.tv_nsec += timeout % 1000 * 1000000;
+    if(node->timeout.tv_nsec >= 1000000000)
+    {
+        node->timeout.tv_nsec -= 1000000000;
+        node->timeout.tv_sec++;
+    }
+}
+
+static int __poller_data_get_event(int *event, const struct poller_data *data)
+{
+    switch(data->operation)
+    {
+        case PD_OP_READ:
+            *event = EPOLLIN | EPOLLET;
+            return !!data->message;
+        case PD_OP_WRITE:
+            *event = EPOLLOUT | EPOLLET;
+            return 0;
+        case PD_OP_LISTEN:
+            *event = EPOLLIN;
+            return 1;
+        case PD_OP_CONNECT:
+            *event = EPOLLOUT | EPOLLET;
+            return 0;
+        case PD_OP_RECVFROM:
+            *event = EPOLLIN | EPOLLET;
+            return 1;
+        case PD_OP_SSL_ACCEPT:
+            *event = EPOLLIN | EPOLLET;
+            return 0;
+        case PO_OP_SSL_SHUTDOWN:
+            *event = EPOLLOUT | EPOLLET;
+            return 0;
+        case PD_OP_EVENT:
+            *event = EPOLLIN | EPOLLET;
+            return 1;
+        case PD_OP_NOTIFY:
+            *event = EPOLLIN | EPOLLET;
+            return 1;
+        default:
+            errno = EINVAL;
+            return -1;
+    }
+}
+
+static struct __poller_node *__poller_new_node(const struct poller_data *data, int timeout, poller_t *poller)
+{
+    struct __poller_node *res = NULL;
+    struct __poller_node *node;
+    int need_res;
+    int event;
+
+    if((size_t)data->fd >= poller->max_open_files)
+    {
+        errno = data->fd < ? EBADF : EMFILE;
+        return NULL;
+    }
+
+    need_res = __poller_data_get_event(&event, data);
+    if(need_res < 0)
+    {
+        return NULL;
+    }
+
+    if(need_res)
+    {
+        res = (struct __poller_node *)malloc(sizeof(struct __poller_node));
+        if(!res)
+            return NULL;
+    }
+
+    node = (struct __poller_node *)malloc(sizeof (struct __poller_node));
+    if(!node)
+    {
+        free(res);
+        return NULL;
+    }
+
+    node->data = *data;
+    node->event = event;
+    node->in_rbtree = 0;
+    node->removed = 0;
+    node->res = res;
+    if(timeout >= 0)
+    {
+        __poller_node_set_timeout(timeout, node);
+    }
+
+    return node;
+}
+
+int poller_add(const struct poller_data *data, int timeout, poller_t *poller)
+{
+    struct __poller_node *node;
+    node = __poller_new_node(data, timeout, poller);
+    if(!node)
+        return -1;
+
+    pthread_mutex_lock(&poller->mutex);
+    if(!poller->nodes[data->fd])
+    {
+        if(__poller_add_fd(data->fd, node->event, node, poller) >= 0)
+        {
+            if(timeout >= 0)
+            {
+                __Poller_insert_node(node, poller);
+            }
+            else
+            {
+                list_add_tail(&node->list, &poller->node_time_list);
+            }
+            poller->nodes[data->fd] = node;
+            node = NULL;
+        }
+    }
+    else
+    {
+        errno = EEXIST;
+    }
+
+    pthread_mutex_unlock(&poller->mutex);
+    if(node == NULL)
+    {
+        return 0;
+    }
+
+    free(node->res);
+    free(node);
+    return -1;
+}
