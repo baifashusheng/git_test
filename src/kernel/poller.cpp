@@ -1413,3 +1413,319 @@ int poller_add(const struct poller_data *data, int timeout, poller_t *poller)
     free(node);
     return -1;
 }
+
+int poller_del(int fd, poller_t *poller)
+{
+    struct __poller_node *node;
+    int stopped = 0;
+
+    if((size_t)fd >= poller->max_open_filen)
+    {
+        errno = fd < 0 ? EBADF : EMFILE;
+        return -1;
+    }
+
+    pthread_mutex_lock(&poller->mutex);
+    node = poller->nodes[fd];
+    if(node)
+    {
+        poller->nodes[fd] = NULL;
+
+        if(node->in_rbtree)
+        {
+            __poller_tree_erase(node, poller);
+        }
+        else
+        {
+            list_del(&node->list);
+        }
+
+        __poller_del_fd(fd, node->event, poller);
+
+        node->error = 0;
+        node->state = PR_ST_DELETED;
+        stopped = poller->stopped;
+
+        if(!stopped)
+        {
+            node->removed = 1;
+            write(poller->pipe_wr, &node, sizeof (void *));
+        }
+    }
+    else
+    {
+        errno = ENOENT;
+    }
+
+    pthread_mutex_unlock(&poller->mutex);
+
+    if(stopped)
+    {
+        free(node->res);
+        poller->callback((struct poller_result *) node, poller->context);
+    }
+
+    return -!node;
+}
+
+int poller_mod(const struct poller_data *data, int timeout, poller_t *poller)
+{
+    struct __poller_node *node;
+    struct __poller_node *orig;
+    int stopped = 0;
+
+    node = __poller_new_node(data, timeout, poller);
+    if(!node)
+    {
+        return -1;
+    }
+
+    pthread_mutex_lock(&poller->mutex);
+    orig = poller->nodes[data->fd];
+    if(orig)
+    {
+        if(__poller_mod_fd(data->fd, orig->event, node->event, node, poller) >= 0)
+        {
+            if(orig->in_rbtree)
+            {
+                __poller_tree_erase(orig, poller);
+            }
+            else
+            {
+                list_del(&orig->list);
+            }
+
+            orig->error = 0;
+            orig->state = PR_ST_MODIFIED;
+            stopped = poler->stopped;
+            if(!stopped)
+            {
+                orig->removed = 1;
+                write(poller->pipe_wr, &orig, sizeof (void *));
+            }
+
+            if(timeout >= 0)
+            {
+                __poller_insert_node(node, poller);
+            }
+            else
+            {
+                list_add_tail(&node->list, &poller->no_timeo_list);
+            }
+
+            poller->nodes[data->fd] = node;
+            node = NULL;
+        }
+    }
+    else
+    {
+        errno = ENOENT;
+    }
+
+    pthread_mutex_unlock(&poller->mutex);
+
+    if(stopped)
+    {
+        free(orig_res);
+        poller->callback((struct poller_result *)orig, poller->context);
+    }
+
+    if(node == NULL)
+    {
+        return 0;
+    }
+
+    free(node->res);
+    free(node);
+    return -1;
+}
+
+int poller_set_timeout(int fd, int timeout, poller_t *poller)
+{
+    struct __poller_node time_node;
+    struct __poller_node *node;
+
+    if((size_t)fd >= poller->max_open_files)
+    {
+        errno = fd < 0? EBADF : EMFILE;
+        return -1;
+    }
+
+    if(timeout >= 0)
+    {
+        __poller_node_set_timeout(timeout. &time_node);
+    }
+
+    pthread_mutex_lock(&poller->mutex);
+    node = poller->nodes[fd];
+    if(node)
+    {
+        if(node->in_rbtree)
+        {
+            __poller_tree_erase(node, poller);
+        }
+        else
+        {
+            list_del(&node->list);
+        }
+
+        if(timeout >= 0)
+        {
+            node->timeout = time_node.timeout;
+            __poller_insert_node(node,poller);
+        }
+        else
+        {
+            list_add_tail(&node->list, &poller->no_timeo_list);
+        }
+    }
+    else
+    {
+        errno = ENOENT;
+    }
+    pthread_mutex_unlock(&poller->mutex);
+    return = -!node;
+}
+
+int poller_add_timer(const struct timespec *value, void *context, void **timer, poller_t *poller)
+{
+    struct __poller_node *node;
+    if(value->tv_sec < 0 || value->tv_nsec >= 1000000000)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    node = (struct __poller_node *)malloc(sizeof(__poller_node));
+    if(node)
+    {
+        memset(&node->data, 0, sizeof(struct poller_data));
+        node->data.operation = PD_OP_TIMER;
+        node->data.fd = -1;
+        node->data.context = context;
+        node->in_rbtree = 0;
+        node->removed = 0;
+        node->res = NULL;
+
+        if(value->tv_sec >= 0)
+        {
+            clock_gettime(CLOCK_MONOTONIC, &node->timeout);
+            node->timeout.tv_sec += value->tv_sec;
+            node->timeout.tv_nsec += value->tv_nsec;
+            if(node->timeout.tv_nsec >= 1000000000)
+            {
+                node->timeout.tv_sec++;
+                node->timeout.tv_nsec -= 1000000000;
+            }
+        }
+
+        *timer = node;
+        pthread_mutex_lock(&poller->mutex);
+        if(value->tv_sec >= 0)
+        {
+            __poller_insert_node(node, poller);
+        }
+        else
+        {
+            list_add_tail(&node->list, &poller->no_timeo_list);
+        }
+        pthread_mutex_unlock(&poller->mutex);
+        return 0;
+    }
+    return -1;
+}
+
+int poller_del_timer(void *timer, poller_t *poller)
+{
+    struct __poller_node *node = (struct __poller_node *)timer;
+    int stopped = 0;
+
+    pthread_mutex_lock(&poller->mutex);
+    if(!node->removed)
+    {
+        node->removed = 1;
+        if(node->in_rbtree)
+        {
+            __poller_tree_erase(node, poller);
+        }
+        else
+        {
+            list_del(&node->list);
+        }
+
+        node->error = 0;
+        node->state = PR_ST_DELETED;
+        stopped = poller->stopped;
+        if(!stopped)
+        {
+            write(poller->pipe_wr, &node, sizeof (void *));
+        }
+    }
+    else
+    {
+        errno = ENOENT;
+        node = NULL;
+    }
+
+    pthread_mutex_unlock(&poller->mutex);
+
+    if(stopped)
+    {
+        poller->callback((struct poller_result *)node, poller->context);
+    }
+
+    return -!node;
+}
+
+void poller_stop(poller_t *poller)
+{
+    struct __poller_node *node;
+    struct list_head *pos, *tmp;
+    LIST_HEAD(node_list);
+    void *p = NULL;
+
+    write(poller->pipe_wr, &p, sizeof(void *));
+    pthread_join(poller->tid, NULL);
+    poller->stopped = 1;
+
+    pthread_mutex_lock(&poller->mutex);
+    close(poller->pipe_wr);
+    __poller_handle_pipe(poller);
+    close(poller->pipe_fd);
+
+    poller->tree_first = NULL;
+    poller->tree_last = NULL;
+
+    while(poller->timeo_list.rb_node)
+    {
+        node = rb_entry(poller->timeo_tree.rb_node, struct __poller_node, rb);
+        rb_erase(&node->rb, &poller->timeo_tree);
+        list_add(&node->list, &node_list);
+    }
+
+    list_splice_init(&poller->timeo_list, &node_list);
+    list_splice_init(&poller->no_timeo_list, &node_list);
+    list_for_each(pos, &node_list)
+    {
+        node = list_entry(pos, struct __poller_node, list);
+        if(node->data.fd >= 0)
+        {
+            poller->nodes[node->data.fd] = NULL;
+            __poller_del_fd(node->data.fd, node->event, poller);
+        }
+        else
+        {
+            node->removed = 1;
+        }
+    }
+
+    pthread_mutex_unlock(&poller->mutex);
+    list_for_each_safe(pos, tmp, &node_list);
+    {
+        node = list_entry(pos, struct __poller_node, list);
+        node->error = 0;
+        node->state = PR_ST_STOPPED;
+        free(node->res);
+        poller->callback((struct poller_result *)node, poller->context);
+    }
+}
