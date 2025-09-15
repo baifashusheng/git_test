@@ -87,4 +87,82 @@ static inline void list_splice(const struct list_head *list, struct list_head *h
     }
 }
 
+static inline void list_splice_init(struct list_head *list, struct list_head *head)
+{
+    if(!list_empty(list))
+    {
+        __list_splice(list, head, head->next);
+        INIT_LIST_HEAD(list);
+    }
+}
+
+#define list_entry(ptr, type, member) \
+    ((type *)((char *)(ptr)-(unsigned long)(&((type *)0)->member)))
+
+#define list_for_each(pos, head) \
+    for(pos = (head)->next; pos != (head); pos = pos->next)
+
+
+#define list_for_each_prev(pos, head) \
+    for(pos = (head)->prev; pos != (head); pos = pos->prev)
+
+#define list_for_each_safe(pos, n, head) \
+    for(pos = (head)->next, n = pos->next; pos != (head); \
+        pos = n, n = pos->next)
+
+#define list_for_each_entry(pos, head, member) \
+    for(pos = list_entry((head)->next, typeof (*pos), member); \
+        &pos->member != (head); \
+        pos = list_entry(pos->member.next, typeof (*pos), member))
+
+
+struct slist_node{
+    struct slist_node *next;
+};
+
+struct slist_head{
+    struct slist_node first, *last;
+};
+
+#define SLIST_HEAD_INIT(name) {{(struct slist_node *)0}, &(name).first}
+
+#define SLIST_HEAD(name) \
+    struct slist_head name = SLIST_HEAD_INIT(name)
+
+
+static inline void INIT_SLIST_HEAD(struct slist_head *list)
+{
+    list->first.next = (struct slist_node *)0;
+    list->last = &list->first;
+}
+
+static inline void slist_add_after(struct slist_node *entry,
+                    struct slist_node *prev,
+                    struct slist_node *list)
+{
+    entry->next = prev->next;
+    prev->next = entry;
+    if(!entry->next)
+        list->last = entry;
+}
+
+static inline void slist_add_head(struct slist_node *entry,
+                    struct slist_head *list)
+{
+    slist_add_after(entry, &list->first, list);
+}
+
+
+static inline void slist_add_tail(struct slist_node *entry,
+                    struct slist_head *list)
+{
+    entry->next = (struct slist_node *)0;
+    list->last->next = entry;
+    list->last = entry;
+}
+
+
+
+
+
 #endif //_LINUX_LIST_H
