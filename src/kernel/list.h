@@ -161,8 +161,59 @@ static inline void slist_add_tail(struct slist_node *entry,
     list->last = entry;
 }
 
+static inline void slist_del_after(struct slist_node *prev, struct slist_head *list)
+{
+    prev->next = prev->next->next;
+    if(!prev->next)
+        list->last = prev;
+}
 
+static inline void slist_del_head(struct slist_head *list)
+{
+    slist_del_after(&list->first, list);
+}
 
+static inline int slist_empty(const struct slist_head *list)
+{
+    return !list->first.next;
+}
 
+static inline void __slist_splice(const struct slist_head *list,
+                    struct slist_node *prev,
+                    struct slist_head *head)
+{
+    list->last->next = prev->next;
+    prev->next = list->first.next;
+    if(!list->last->next)
+    {
+        head->last = list->last;
+    }
+}
+
+static inline void slist_splice(const struct slist_head *list,
+                    struct slist_node *prev,
+                    struct slist_node *head)
+{
+    if(!slist_empty(list))
+    {
+        __slist_splice(list,prev,head);
+        INIT_SLIST_HEAD(list);
+    }
+}
+
+#define slist_entry(ptr, type, member) \
+    ((type *)((char *)(ptr)-(unsigned long)(&((type *)0)->member)))
+
+#define slist_for_each(pos, head) \
+    for(pos = (head)->first.next; pos; pos = pos->next)
+
+#define slist_for_each_safe(pos, prev, head)
+    for(prev = &(head)->first, pos = prev->next; pos; \
+        prev = prev->next == pos ? pos : prev, pos = prev->next)
+
+#define slist_for_each_entry(pos, head, member) \
+    for(pos = slist_entry((head)->first.next, type (*pos), member); \
+        &pos->member != (struct slist_node *)0; \
+        pos = slist_entry(pos->member.next, typeof (*pos), member))
 
 #endif //_LINUX_LIST_H
